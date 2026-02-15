@@ -1,0 +1,61 @@
+name: Run Telegram Bot
+
+on:
+  schedule:
+    # Run every 6 hours
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    # Allow manual trigger
+    inputs:
+      duration:
+        description: 'Run duration in minutes'
+        required: false
+        default: '350'
+
+env:
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  SPREAD_THRESHOLD: '3.0'
+  LOG_LEVEL: 'INFO'
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350  # Max 6 hours minus buffer
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Create .env file
+        run: |
+          echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" > .env
+          echo "SPREAD_THRESHOLD=3.0" >> .env
+          echo "LOG_LEVEL=INFO" >> .env
+          echo "LOG_FORMAT=json" >> .env
+      
+      - name: Run bot
+        run: |
+          echo "Starting bot at $(date)"
+          timeout 330m python main.py || echo "Bot finished or timed out"
+          echo "Bot stopped at $(date)"
+      
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-logs-${{ github.run_number }}
+          path: |
+            *.log
+            logs/
+          retention-days: 7
