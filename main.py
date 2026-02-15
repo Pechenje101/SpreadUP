@@ -17,6 +17,7 @@ except ImportError:
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from aiogram.types import Message
 
 from config.settings import get_settings
 from core.engine import MonitoringEngine
@@ -58,7 +59,17 @@ async def main():
     engine.add_alert_callback(notification_service.send_alert)
     
     # Register handlers
-    register_handlers(engine, notification_service)
+    handler_router = register_handlers(engine, notification_service)
+    dp.include_router(handler_router)
+    
+    # Add logging middleware
+    @dp.message()
+    async def log_message(message: Message):
+        logger.info(
+            "Message received",
+            text=message.text,
+            user_id=message.from_user.id if message.from_user else None
+        )
     
     # Initialize engine
     await engine.initialize()
@@ -98,6 +109,8 @@ async def main():
             pass
     
     # Start polling in background
+    logger.info("Starting Telegram polling...")
+    
     polling_task = asyncio.create_task(
         dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     )

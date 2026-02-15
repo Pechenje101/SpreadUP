@@ -54,6 +54,8 @@ def register_handlers(
         user_id = message.from_user.id
         user_name = message.from_user.first_name or "Пользователь"
         
+        logger.info("Received /start command", user_id=user_id, user_name=user_name)
+        
         # Auto-subscribe user
         notification_service.subscribe(user_id)
         
