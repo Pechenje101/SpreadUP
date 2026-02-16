@@ -39,7 +39,8 @@ class SpreadCalculator:
         
         # Track last alert times for cooldown
         self._last_alert_times: Dict[str, datetime] = {}
-        self._alert_cooldown_seconds = 60
+        # Use 30 minutes cooldown by default
+        self._alert_cooldown_seconds = 1800
     
     def calculate_spread(
         self,
@@ -175,7 +176,8 @@ class SpreadCalculator:
         Returns:
             True if alert can be sent, False if in cooldown
         """
-        key = f"{opportunity.symbol}:{opportunity.spot_exchange.value}:{opportunity.futures_exchange.value}"
+        # Use only base_asset as key - 30 min cooldown per token
+        key = opportunity.base_asset
         
         if key in self._last_alert_times:
             elapsed = (datetime.utcnow() - self._last_alert_times[key]).total_seconds()

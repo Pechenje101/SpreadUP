@@ -109,8 +109,12 @@ class BingXConnector(BaseExchangeConnector):
                     normalized = symbol.replace("_", "")
                     try:
                         price = float(trades[0].get("price", 0))
+                        volume = float(item.get("volume", 0))  # Approximate volume
                         if price > 0:
-                            prices[normalized] = price
+                            prices[normalized] = {
+                                "price": price,
+                                "volume_24h": volume * price  # Convert to USDT
+                            }
                     except (ValueError, TypeError, IndexError):
                         pass
         

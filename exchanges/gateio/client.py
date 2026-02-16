@@ -104,8 +104,12 @@ class GateIOConnector(BaseExchangeConnector):
             for item in data:
                 symbol = item.get("currency_pair", "")
                 price = item.get("last", "0")
+                volume = float(item.get("quote_volume", 0))  # USDT volume
                 if symbol and price:
-                    prices[symbol] = float(price)
+                    prices[symbol] = {
+                        "price": float(price),
+                        "volume_24h": volume
+                    }
         
         return prices
     

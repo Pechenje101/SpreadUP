@@ -265,22 +265,40 @@ class BaseExchangeConnector(ABC):
                 futures_prices = await self.get_all_futures_prices()
                 
                 # Update cache with REST data
-                for symbol, price in spot_prices.items():
+                for symbol, data in spot_prices.items():
+                    # Handle both old format (float) and new format (dict)
+                    if isinstance(data, dict):
+                        price = data.get("price", 0)
+                        volume = data.get("volume_24h")
+                    else:
+                        price = data
+                        volume = None
+                    
                     price_update = PriceUpdate(
                         symbol=symbol,
                         exchange=self.exchange_type,
                         market_type=MarketType.SPOT,
                         price=price,
+                        volume_24h=volume,
                         timestamp=datetime.utcnow()
                     )
                     await self._notify_callbacks(price_update)
                 
-                for symbol, price in futures_prices.items():
+                for symbol, data in futures_prices.items():
+                    # Handle both old format (float) and new format (dict)
+                    if isinstance(data, dict):
+                        price = data.get("price", 0)
+                        volume = data.get("volume_24h")
+                    else:
+                        price = data
+                        volume = None
+                    
                     price_update = PriceUpdate(
                         symbol=symbol,
                         exchange=self.exchange_type,
                         market_type=MarketType.FUTURES,
                         price=price,
+                        volume_24h=volume,
                         timestamp=datetime.utcnow()
                     )
                     await self._notify_callbacks(price_update)
@@ -303,54 +321,6 @@ class BaseExchangeConnector(ABC):
                     error=str(e)
                 )
                 await asyncio.sleep(5)
-    
-    async def _rest_poll_loop(self):
-        """REST API polling loop as fallback for WebSocket."""
-        await asyncio.sleep(10)  # Wait for initial WebSocket connection
-        
-        while self._running:
-            try:
-                # Get all prices via REST
-                spot_prices = await self.get_all_spot_prices()
-                futures_prices = await self.get_all_futures_prices()
-                
-                # Send price updates
-                for symbol, price in spot_prices.items():
-                    price_update = PriceUpdate(
-                        symbol=symbol,
-                        exchange=self.exchange_type,
-                        market_type=MarketType.SPOT,
-                        price=price,
-                        timestamp=datetime.utcnow()
-                    )
-                    await self._notify_callbacks(price_update)
-                
-                for symbol, price in futures_prices.items():
-                    price_update = PriceUpdate(
-                        symbol=symbol,
-                        exchange=self.exchange_type,
-                        market_type=MarketType.FUTURES,
-                        price=price,
-                        timestamp=datetime.utcnow()
-                    )
-                    await self._notify_callbacks(price_update)
-                
-                logger.debug(
-                    "REST poll completed",
-                    exchange=self.exchange_type.value,
-                    spot_prices=len(spot_prices),
-                    futures_prices=len(futures_prices)
-                )
-                
-            except Exception as e:
-                logger.error(
-                    "REST poll error",
-                    exchange=self.exchange_type.value,
-                    error=str(e)
-                )
-            
-            # Poll every 5 seconds
-            await asyncio.sleep(5)
     
     async def _rest_request(
         self,

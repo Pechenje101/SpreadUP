@@ -91,16 +91,20 @@ class MEXCConnector(BaseExchangeConnector):
     
     async def get_all_spot_prices(self) -> Dict[str, float]:
         """Get all spot prices via REST API."""
-        url = f"{self.spot_rest_base}/api/v3/ticker/price"
+        url = f"{self.spot_rest_base}/api/v3/ticker/24hr"
         data = await self._rest_request(url)
         
         prices = {}
         if data and isinstance(data, list):
             for item in data:
                 symbol = item.get("symbol", "")
-                price = item.get("price", "0")
+                price = item.get("lastPrice", "0")
+                volume = float(item.get("quoteVolume", 0))  # USDT volume
                 if symbol and price:
-                    prices[symbol] = float(price)
+                    prices[symbol] = {
+                        "price": float(price),
+                        "volume_24h": volume
+                    }
         
         return prices
     

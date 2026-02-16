@@ -100,9 +100,13 @@ class HTXConnector(BaseExchangeConnector):
                 symbol = ticker.get("symbol", "")
                 normalized = symbol.upper()
                 close = ticker.get("close", 0)
+                vol = float(ticker.get("vol", 0))  # Quote volume in USDT
                 if normalized and close:
                     try:
-                        prices[normalized] = float(close)
+                        prices[normalized] = {
+                            "price": float(close),
+                            "volume_24h": vol
+                        }
                     except (ValueError, TypeError):
                         pass
         
