@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     
     # Telegram
     TELEGRAM_BOT_TOKEN: str = Field(
-        default="8381857998:AAEZtSSsecBWWyp3EeRa_sIiE3OPllCvRLU",
+        default="8302716724:AAGXkvhnM8XGlFIB8XrTs5W5DvAHRrECcKc",
         description="Telegram Bot Token"
     )
     TELEGRAM_ADMIN_IDS: List[int] = Field(

@@ -23,15 +23,14 @@ class MEXCConnector(BaseExchangeConnector):
         super().__init__(
             exchange_type=ExchangeType.MEXC,
             spot_rest_base="https://api.mexc.com",
-            spot_ws_base="wss://wbs.mexc.com/raw/ws",
+            spot_ws_base="wss://stream.mexc.com/ws",
             futures_rest_base="https://contract.mexc.com",
-            futures_ws_base="wss://contract.mexc.com/edge/ws",
+            futures_ws_base="wss://contract.mexc.com/ws",
             api_key=api_key,
             api_secret=api_secret
         )
         
-        # MEXC uses different symbol formats
-        self._symbol_map: Dict[str, str] = {}  # Standard -> MEXC format
+        self._symbol_map: Dict[str, str] = {}
     
     async def _fetch_symbols(self):
         """Fetch available trading symbols from MEXC."""
@@ -42,7 +41,9 @@ class MEXCConnector(BaseExchangeConnector):
             
             if spot_data and "symbols" in spot_data:
                 for symbol_info in spot_data["symbols"]:
-                    if symbol_info.get("status") == "ENABLED":
+                    # MEXC uses status "1" for enabled symbols
+                    status = symbol_info.get("status")
+                    if status in ["ENABLED", "1", 1]:
                         symbol = symbol_info["symbol"]
                         self._spot_symbols.add(symbol)
                         self._symbol_map[symbol] = symbol
@@ -53,9 +54,8 @@ class MEXCConnector(BaseExchangeConnector):
             
             if futures_data and "data" in futures_data:
                 for contract in futures_data["data"]:
-                    if contract.get("state") == 0:  # Enabled
+                    if contract.get("state") == 0:
                         symbol = contract.get("symbol", "")
-                        # Normalize symbol format
                         normalized = symbol.replace("_", "")
                         self._futures_symbols.add(normalized)
                         self._symbol_map[normalized] = symbol
@@ -74,7 +74,6 @@ class MEXCConnector(BaseExchangeConnector):
         """Get spot price via REST API."""
         url = f"{self.spot_rest_base}/api/v3/ticker/price"
         params = {"symbol": symbol}
-        
         data = await self._rest_request(url, params=params)
         if data and "price" in data:
             return float(data["price"])
@@ -82,11 +81,9 @@ class MEXCConnector(BaseExchangeConnector):
     
     async def get_futures_price(self, symbol: str) -> Optional[float]:
         """Get futures price via REST API."""
-        # MEXC futures uses contract symbol format
         contract_symbol = self._symbol_map.get(symbol, symbol)
         url = f"{self.futures_rest_base}/api/v1/contract/ticker"
         params = {"symbol": contract_symbol}
-        
         data = await self._rest_request(url, params=params)
         if data and "data" in data and len(data["data"]) > 0:
             return float(data["data"][0].get("lastPrice", 0))
@@ -116,7 +113,6 @@ class MEXCConnector(BaseExchangeConnector):
         if data and "data" in data:
             for item in data["data"]:
                 symbol = item.get("symbol", "")
-                # Normalize symbol
                 normalized = symbol.replace("_", "")
                 price = item.get("lastPrice", 0)
                 if normalized and price:
@@ -128,118 +124,100 @@ class MEXCConnector(BaseExchangeConnector):
         """Connect to MEXC spot WebSocket."""
         logger.info("Connecting to MEXC spot WebSocket")
         
-        async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(self.spot_ws_base) as ws:
-                self._spot_ws = ws
-                
-                # Subscribe to ticker updates for common symbols
-                symbols_to_subscribe = list(self.common_symbols)[:50]  # Limit subscriptions
-                
-                for symbol in symbols_to_subscribe:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(
+                    "wss://stream.mexc.com/ws",
+                    heartbeat=20
+                ) as ws:
+                    self._spot_ws = ws
+                    
+                    # Subscribe to mini ticker for all symbols
                     subscribe_msg = {
                         "method": "SUBSCRIPTION",
-                        "params": [f"spot@public.aggre.bookTicker.v3.api.pb@{symbol}"]
+                        "params": ["spot@miniTicker"]
                     }
                     await ws.send_json(subscribe_msg)
-                    await asyncio.sleep(0.05)  # Rate limit subscriptions
-                
-                logger.info(
-                    "MEXC spot WebSocket connected",
-                    subscriptions=len(symbols_to_subscribe)
-                )
-                
-                # Message receive loop
-                async for msg in ws:
-                    if not self._running:
-                        break
                     
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        self._stats["ws_messages"] += 1
-                        self._stats["last_update"] = datetime.utcnow().isoformat()
+                    logger.info("MEXC spot WebSocket connected", subscriptions=1)
+                    
+                    async for msg in ws:
+                        if not self._running:
+                            break
                         
-                        try:
-                            data = orjson.loads(msg.data)
-                            price_update = await self._parse_spot_ws_message(data)
-                            if price_update:
-                                await self._notify_callbacks(price_update)
-                        except Exception as e:
-                            logger.debug(
-                                "MEXC spot WS parse error",
-                                error=str(e)
-                            )
-                    
-                    elif msg.type == aiohttp.WSMsgType.ERROR:
-                        logger.error(
-                            "MEXC spot WebSocket error",
-                            error=ws.exception()
-                        )
-                        break
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            self._stats["ws_messages"] += 1
+                            self._stats["last_update"] = datetime.utcnow().isoformat()
+                            
+                            try:
+                                data = orjson.loads(msg.data)
+                                price_update = await self._parse_spot_ws_message(data)
+                                if price_update:
+                                    await self._notify_callbacks(price_update)
+                            except Exception as e:
+                                logger.debug("MEXC spot WS parse error", error=str(e))
+                        
+                        elif msg.type == aiohttp.WSMsgType.ERROR:
+                            logger.error("MEXC spot WebSocket error", error=ws.exception())
+                            break
+                            
+        except Exception as e:
+            logger.error("MEXC spot WS connection failed", error=str(e))
     
     async def _connect_futures_ws(self):
         """Connect to MEXC futures WebSocket."""
         logger.info("Connecting to MEXC futures WebSocket")
         
-        async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(self.futures_ws_base) as ws:
-                self._futures_ws = ws
-                
-                # Subscribe to ticker updates
-                symbols_to_subscribe = list(self.common_symbols)[:50]
-                
-                for symbol in symbols_to_subscribe:
-                    contract_symbol = self._symbol_map.get(symbol, symbol)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(
+                    "wss://contract.mexc.com/ws",
+                    heartbeat=20
+                ) as ws:
+                    self._futures_ws = ws
+                    
+                    # Subscribe to ticker
                     subscribe_msg = {
                         "method": "sub.ticker",
-                        "param": {"symbol": contract_symbol}
+                        "param": {}
                     }
                     await ws.send_json(subscribe_msg)
-                    await asyncio.sleep(0.05)
-                
-                logger.info(
-                    "MEXC futures WebSocket connected",
-                    subscriptions=len(symbols_to_subscribe)
-                )
-                
-                async for msg in ws:
-                    if not self._running:
-                        break
                     
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        self._stats["ws_messages"] += 1
-                        self._stats["last_update"] = datetime.utcnow().isoformat()
+                    logger.info("MEXC futures WebSocket connected", subscriptions=1)
+                    
+                    async for msg in ws:
+                        if not self._running:
+                            break
                         
-                        try:
-                            data = orjson.loads(msg.data)
-                            price_update = await self._parse_futures_ws_message(data)
-                            if price_update:
-                                await self._notify_callbacks(price_update)
-                        except Exception as e:
-                            logger.debug(
-                                "MEXC futures WS parse error",
-                                error=str(e)
-                            )
-                    
-                    elif msg.type == aiohttp.WSMsgType.ERROR:
-                        logger.error(
-                            "MEXC futures WebSocket error",
-                            error=ws.exception()
-                        )
-                        break
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            self._stats["ws_messages"] += 1
+                            self._stats["last_update"] = datetime.utcnow().isoformat()
+                            
+                            try:
+                                data = orjson.loads(msg.data)
+                                price_update = await self._parse_futures_ws_message(data)
+                                if price_update:
+                                    await self._notify_callbacks(price_update)
+                            except Exception as e:
+                                logger.debug("MEXC futures WS parse error", error=str(e))
+                        
+                        elif msg.type == aiohttp.WSMsgType.ERROR:
+                            logger.error("MEXC futures WebSocket error", error=ws.exception())
+                            break
+                            
+        except Exception as e:
+            logger.error("MEXC futures WS connection failed", error=str(e))
     
     async def _parse_spot_ws_message(self, data: Any) -> Optional[PriceUpdate]:
         """Parse MEXC spot WebSocket message."""
         try:
-            # MEXC book ticker format
+            # Mini ticker format
             if "d" in data and "s" in data.get("d", {}):
                 d = data["d"]
                 symbol = d.get("s", "")
-                # Use best bid/ask average as price
-                bid = float(d.get("b", 0))
-                ask = float(d.get("a", 0))
+                price = float(d.get("c", 0))  # Close price
                 
-                if bid > 0 and ask > 0:
-                    price = (bid + ask) / 2
-                    
+                if symbol and price > 0:
                     return PriceUpdate(
                         symbol=symbol,
                         exchange=self.exchange_type,
@@ -255,13 +233,12 @@ class MEXCConnector(BaseExchangeConnector):
     async def _parse_futures_ws_message(self, data: Any) -> Optional[PriceUpdate]:
         """Parse MEXC futures WebSocket message."""
         try:
-            # MEXC futures ticker format
-            if "data" in data and "symbol" in data.get("data", {}):
+            if "data" in data and isinstance(data["data"], dict):
                 d = data["data"]
                 symbol = d.get("symbol", "").replace("_", "")
                 price = float(d.get("lastPrice", 0))
                 
-                if price > 0:
+                if symbol and price > 0:
                     return PriceUpdate(
                         symbol=symbol,
                         exchange=self.exchange_type,

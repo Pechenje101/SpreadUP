@@ -200,6 +200,9 @@ class BaseExchangeConnector(ABC):
         self._spot_ws_task = asyncio.create_task(self._spot_ws_loop())
         self._futures_ws_task = asyncio.create_task(self._futures_ws_loop())
         
+        # Start REST polling as fallback
+        self._rest_poll_task = asyncio.create_task(self._rest_poll_loop())
+        
         logger.info(
             "WebSocket connections started",
             exchange=self.exchange_type.value
@@ -251,6 +254,104 @@ class BaseExchangeConnector(ABC):
                 )
                 await asyncio.sleep(5)
     
+    async def _rest_poll_loop(self):
+        """REST API polling loop as fallback for WebSocket."""
+        await asyncio.sleep(10)  # Wait for WebSocket to connect first
+        
+        while self._running:
+            try:
+                # Poll all prices via REST every 10 seconds
+                spot_prices = await self.get_all_spot_prices()
+                futures_prices = await self.get_all_futures_prices()
+                
+                # Update cache with REST data
+                for symbol, price in spot_prices.items():
+                    price_update = PriceUpdate(
+                        symbol=symbol,
+                        exchange=self.exchange_type,
+                        market_type=MarketType.SPOT,
+                        price=price,
+                        timestamp=datetime.utcnow()
+                    )
+                    await self._notify_callbacks(price_update)
+                
+                for symbol, price in futures_prices.items():
+                    price_update = PriceUpdate(
+                        symbol=symbol,
+                        exchange=self.exchange_type,
+                        market_type=MarketType.FUTURES,
+                        price=price,
+                        timestamp=datetime.utcnow()
+                    )
+                    await self._notify_callbacks(price_update)
+                
+                logger.debug(
+                    "REST poll completed",
+                    exchange=self.exchange_type.value,
+                    spot_count=len(spot_prices),
+                    futures_count=len(futures_prices)
+                )
+                
+                await asyncio.sleep(10)  # Poll every 10 seconds
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(
+                    "REST poll error",
+                    exchange=self.exchange_type.value,
+                    error=str(e)
+                )
+                await asyncio.sleep(5)
+    
+    async def _rest_poll_loop(self):
+        """REST API polling loop as fallback for WebSocket."""
+        await asyncio.sleep(10)  # Wait for initial WebSocket connection
+        
+        while self._running:
+            try:
+                # Get all prices via REST
+                spot_prices = await self.get_all_spot_prices()
+                futures_prices = await self.get_all_futures_prices()
+                
+                # Send price updates
+                for symbol, price in spot_prices.items():
+                    price_update = PriceUpdate(
+                        symbol=symbol,
+                        exchange=self.exchange_type,
+                        market_type=MarketType.SPOT,
+                        price=price,
+                        timestamp=datetime.utcnow()
+                    )
+                    await self._notify_callbacks(price_update)
+                
+                for symbol, price in futures_prices.items():
+                    price_update = PriceUpdate(
+                        symbol=symbol,
+                        exchange=self.exchange_type,
+                        market_type=MarketType.FUTURES,
+                        price=price,
+                        timestamp=datetime.utcnow()
+                    )
+                    await self._notify_callbacks(price_update)
+                
+                logger.debug(
+                    "REST poll completed",
+                    exchange=self.exchange_type.value,
+                    spot_prices=len(spot_prices),
+                    futures_prices=len(futures_prices)
+                )
+                
+            except Exception as e:
+                logger.error(
+                    "REST poll error",
+                    exchange=self.exchange_type.value,
+                    error=str(e)
+                )
+            
+            # Poll every 5 seconds
+            await asyncio.sleep(5)
+    
     async def _rest_request(
         self,
         url: str,
@@ -265,7 +366,14 @@ class BaseExchangeConnector(ABC):
                 self._stats["rest_requests"] += 1
                 
                 if response.status == 200:
-                    return await response.json()
+                    # Try to parse JSON regardless of content-type
+                    text = await response.text()
+                    try:
+                        import orjson
+                        return orjson.loads(text)
+                    except:
+                        import json
+                        return json.loads(text)
                 else:
                     text = await response.text()
                     logger.warning(

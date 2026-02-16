@@ -62,15 +62,6 @@ async def main():
     handler_router = register_handlers(engine, notification_service)
     dp.include_router(handler_router)
     
-    # Add logging middleware
-    @dp.message()
-    async def log_message(message: Message):
-        logger.info(
-            "Message received",
-            text=message.text,
-            user_id=message.from_user.id if message.from_user else None
-        )
-    
     # Initialize engine
     await engine.initialize()
     

@@ -43,6 +43,7 @@ class PriceUpdate(BaseModel):
     exchange: ExchangeType
     market_type: MarketType
     price: float
+    volume_24h: Optional[float] = Field(default=None, description="24h volume")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     latency_ms: Optional[float] = Field(default=None)
     

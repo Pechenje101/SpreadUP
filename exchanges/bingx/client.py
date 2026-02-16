@@ -35,15 +35,17 @@ class BingXConnector(BaseExchangeConnector):
     async def _fetch_symbols(self):
         """Fetch available trading symbols from BingX."""
         try:
-            # Fetch spot symbols
+            # Fetch spot symbols using correct endpoint
             spot_url = f"{self.spot_rest_base}/openApi/spot/v1/common/symbols"
-            spot_data = await self._rest_request(spot_url)
+            headers = {"Content-Type": "application/json"}
+            spot_data = await self._rest_request(spot_url, headers=headers)
             
-            if spot_data and "data" in spot_data:
-                for symbol_info in spot_data["data"]:
-                    if symbol_info.get("status") == 1:  # Trading enabled
+            if spot_data and "data" in spot_data and "symbols" in spot_data["data"]:
+                for symbol_info in spot_data["data"]["symbols"]:
+                    if symbol_info.get("status") == 1:
                         symbol = symbol_info.get("symbol", "")
-                        self._spot_symbols.add(symbol)
+                        if symbol:
+                            self._spot_symbols.add(symbol)
             
             # Fetch futures symbols
             futures_url = f"{self.futures_rest_base}/openApi/swap/v2/quote/contracts"
@@ -53,7 +55,6 @@ class BingXConnector(BaseExchangeConnector):
                 for contract in futures_data["data"]:
                     if contract.get("status") == 1:
                         symbol = contract.get("symbol", "")
-                        # BingX futures uses BTC-USDT format
                         normalized = symbol.replace("-", "")
                         self._futures_symbols.add(normalized)
             
@@ -71,7 +72,6 @@ class BingXConnector(BaseExchangeConnector):
         """Get spot price via REST API."""
         url = f"{self.spot_rest_base}/openApi/spot/v1/ticker/price"
         params = {"symbol": symbol}
-        
         data = await self._rest_request(url, params=params)
         if data and "data" in data:
             return float(data["data"].get("price", 0))
@@ -79,7 +79,6 @@ class BingXConnector(BaseExchangeConnector):
     
     async def get_futures_price(self, symbol: str) -> Optional[float]:
         """Get futures price via REST API."""
-        # Convert BTCUSDT -> BTC-USDT
         if "-" not in symbol:
             contract = f"{symbol[:-4]}-{symbol[-4:]}"
         else:
@@ -87,7 +86,6 @@ class BingXConnector(BaseExchangeConnector):
         
         url = f"{self.futures_rest_base}/openApi/swap/v2/quote/price"
         params = {"symbol": contract}
-        
         data = await self._rest_request(url, params=params)
         if data and "data" in data:
             return float(data["data"].get("price", 0))
@@ -96,7 +94,8 @@ class BingXConnector(BaseExchangeConnector):
     async def get_all_spot_prices(self) -> Dict[str, float]:
         """Get all spot prices via REST API."""
         url = f"{self.spot_rest_base}/openApi/spot/v1/ticker/prices"
-        data = await self._rest_request(url)
+        headers = {"Content-Type": "application/json"}
+        data = await self._rest_request(url, headers=headers)
         
         prices = {}
         if data and "data" in data:
@@ -104,7 +103,10 @@ class BingXConnector(BaseExchangeConnector):
                 symbol = item.get("symbol", "")
                 price = item.get("price", "0")
                 if symbol and price:
-                    prices[symbol] = float(price)
+                    try:
+                        prices[symbol] = float(price)
+                    except (ValueError, TypeError):
+                        pass
         
         return prices
     
@@ -117,7 +119,6 @@ class BingXConnector(BaseExchangeConnector):
         if data and "data" in data:
             for item in data["data"]:
                 symbol = item.get("symbol", "")
-                # Normalize: BTC-USDT -> BTCUSDT
                 normalized = symbol.replace("-", "")
                 price = item.get("price", 0)
                 if normalized and price:
@@ -129,119 +130,110 @@ class BingXConnector(BaseExchangeConnector):
         """Connect to BingX spot WebSocket."""
         logger.info("Connecting to BingX spot WebSocket")
         
-        async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(self.spot_ws_base) as ws:
-                self._spot_ws = ws
-                
-                symbols_to_subscribe = list(self.common_symbols)[:50]
-                
-                # BingX ping/pong handler
-                ping_task = asyncio.create_task(self._ping_loop(ws))
-                
-                for symbol in symbols_to_subscribe:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(
+                    "wss://open-api-ws.bingx.com/spot/ws",
+                    heartbeat=30
+                ) as ws:
+                    self._spot_ws = ws
+                    
+                    # Ping task
+                    ping_task = asyncio.create_task(self._ping_loop(ws))
+                    
+                    # Subscribe to all tickers
                     subscribe_msg = {
-                        "id": f"spot_ticker_{symbol}",
+                        "id": "spot_ticker_all",
                         "requestType": "subscribe",
-                        "dataType": f"ticker.{symbol}"
+                        "dataType": "ticker"
                     }
                     await ws.send_json(subscribe_msg)
-                    await asyncio.sleep(0.05)
-                
-                logger.info(
-                    "BingX spot WebSocket connected",
-                    subscriptions=len(symbols_to_subscribe)
-                )
-                
-                async for msg in ws:
-                    if not self._running:
-                        ping_task.cancel()
-                        break
                     
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        self._stats["ws_messages"] += 1
-                        self._stats["last_update"] = datetime.utcnow().isoformat()
+                    logger.info("BingX spot WebSocket connected", subscriptions=1)
+                    
+                    async for msg in ws:
+                        if not self._running:
+                            ping_task.cancel()
+                            break
                         
-                        try:
-                            data = orjson.loads(msg.data)
-                            price_update = await self._parse_spot_ws_message(data)
-                            if price_update:
-                                await self._notify_callbacks(price_update)
-                        except Exception as e:
-                            logger.debug(
-                                "BingX spot WS parse error",
-                                error=str(e)
-                            )
-                    
-                    elif msg.type == aiohttp.WSMsgType.ERROR:
-                        logger.error(
-                            "BingX spot WebSocket error",
-                            error=ws.exception()
-                        )
-                        ping_task.cancel()
-                        break
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            # Handle pong
+                            if msg.data == "pong":
+                                continue
+                                
+                            self._stats["ws_messages"] += 1
+                            self._stats["last_update"] = datetime.utcnow().isoformat()
+                            
+                            try:
+                                data = orjson.loads(msg.data)
+                                price_update = await self._parse_spot_ws_message(data)
+                                if price_update:
+                                    await self._notify_callbacks(price_update)
+                            except Exception as e:
+                                logger.debug("BingX spot WS parse error", error=str(e))
+                        
+                        elif msg.type == aiohttp.WSMsgType.ERROR:
+                            logger.error("BingX spot WebSocket error", error=ws.exception())
+                            ping_task.cancel()
+                            break
+                            
+        except Exception as e:
+            logger.error("BingX spot WS connection failed", error=str(e))
     
     async def _connect_futures_ws(self):
         """Connect to BingX futures WebSocket."""
         logger.info("Connecting to BingX futures WebSocket")
         
-        async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(self.futures_ws_base) as ws:
-                self._futures_ws = ws
-                
-                symbols_to_subscribe = list(self.common_symbols)[:50]
-                
-                ping_task = asyncio.create_task(self._ping_loop(ws))
-                
-                for symbol in symbols_to_subscribe:
-                    # Convert BTCUSDT -> BTC-USDT
-                    if "-" not in symbol:
-                        contract = f"{symbol[:-4]}-{symbol[-4:]}"
-                    else:
-                        contract = symbol
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(
+                    "wss://open-api-ws.bingx.com/swap/ws",
+                    heartbeat=30
+                ) as ws:
+                    self._futures_ws = ws
                     
+                    ping_task = asyncio.create_task(self._ping_loop(ws))
+                    
+                    # Subscribe to all tickers
                     subscribe_msg = {
-                        "id": f"futures_ticker_{contract}",
+                        "id": "swap_ticker_all",
                         "requestType": "subscribe",
-                        "dataType": f"ticker.{contract}"
+                        "dataType": "ticker"
                     }
                     await ws.send_json(subscribe_msg)
-                    await asyncio.sleep(0.05)
-                
-                logger.info(
-                    "BingX futures WebSocket connected",
-                    subscriptions=len(symbols_to_subscribe)
-                )
-                
-                async for msg in ws:
-                    if not self._running:
-                        ping_task.cancel()
-                        break
                     
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        self._stats["ws_messages"] += 1
-                        self._stats["last_update"] = datetime.utcnow().isoformat()
+                    logger.info("BingX futures WebSocket connected", subscriptions=1)
+                    
+                    async for msg in ws:
+                        if not self._running:
+                            ping_task.cancel()
+                            break
                         
-                        try:
-                            data = orjson.loads(msg.data)
-                            price_update = await self._parse_futures_ws_message(data)
-                            if price_update:
-                                await self._notify_callbacks(price_update)
-                        except Exception as e:
-                            logger.debug(
-                                "BingX futures WS parse error",
-                                error=str(e)
-                            )
-                    
-                    elif msg.type == aiohttp.WSMsgType.ERROR:
-                        logger.error(
-                            "BingX futures WebSocket error",
-                            error=ws.exception()
-                        )
-                        ping_task.cancel()
-                        break
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            if msg.data == "pong":
+                                continue
+                                
+                            self._stats["ws_messages"] += 1
+                            self._stats["last_update"] = datetime.utcnow().isoformat()
+                            
+                            try:
+                                data = orjson.loads(msg.data)
+                                price_update = await self._parse_futures_ws_message(data)
+                                if price_update:
+                                    await self._notify_callbacks(price_update)
+                            except Exception as e:
+                                logger.debug("BingX futures WS parse error", error=str(e))
+                        
+                        elif msg.type == aiohttp.WSMsgType.ERROR:
+                            logger.error("BingX futures WebSocket error", error=ws.exception())
+                            ping_task.cancel()
+                            break
+                            
+        except Exception as e:
+            logger.error("BingX futures WS connection failed", error=str(e))
     
     async def _ping_loop(self, ws):
-        """Send periodic ping messages to keep connection alive."""
+        """Send periodic ping messages."""
         while self._running:
             try:
                 await ws.send_str("ping")
@@ -276,7 +268,6 @@ class BingXConnector(BaseExchangeConnector):
             if "dataType" in data and "ticker" in data.get("dataType", ""):
                 ticker_data = data.get("data", {})
                 symbol = ticker_data.get("symbol", "")
-                # Normalize: BTC-USDT -> BTCUSDT
                 normalized = symbol.replace("-", "")
                 price = float(ticker_data.get("price", 0))
                 

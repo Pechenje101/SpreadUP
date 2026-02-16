@@ -54,7 +54,7 @@ class SpreadCalculator:
         Positive spread means futures > spot (contango) - good for arbitrage.
         Negative spread means spot > futures (backwardation).
         """
-        if spot_price <= 0:
+        if spot_price <= 0 or futures_price <= 0:
             return 0.0
         
         return ((futures_price - spot_price) / spot_price) * 100
@@ -70,6 +70,14 @@ class SpreadCalculator:
         Valid: futures_price > spot_price (contango)
         """
         return futures_price > spot_price
+    
+    def is_realistic_spread(self, spread_percent: float) -> bool:
+        """
+        Check if spread is realistic.
+        
+        Spreads over 50% are likely data errors.
+        """
+        return 0 < spread_percent < 50
     
     async def find_opportunities(
         self,
@@ -121,8 +129,9 @@ class SpreadCalculator:
                         futures_data.price
                     )
                     
-                    # Check if spread meets threshold and is valid arbitrage
-                    if spread_percent >= self.spread_threshold:
+                    # Check if spread meets threshold, is valid arbitrage, and realistic
+                    if (spread_percent >= self.spread_threshold and 
+                        self.is_realistic_spread(spread_percent)):
                         # Extract base asset
                         base_asset = symbol.replace("USDT", "").replace("_USDT", "")
                         
