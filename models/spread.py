@@ -50,6 +50,7 @@ class SpreadOpportunity(BaseModel):
             ExchangeType.MEXC: f"https://www.mexc.com/exchange/{self.symbol}",
             ExchangeType.GATEIO: f"https://www.gate.io/trade/{self.symbol}",
             ExchangeType.BINGX: f"https://www.bingx.com/en-us/spot/{self.symbol}",
+            ExchangeType.HTX: f"https://www.htx.com/exchange/{self.symbol.lower()}",
         }
         return exchange_urls.get(self.spot_exchange, "")
     
@@ -61,6 +62,7 @@ class SpreadOpportunity(BaseModel):
             ExchangeType.MEXC: f"https://www.mexc.com/futures/{self.symbol}",
             ExchangeType.GATEIO: f"https://www.gate.io/futures_trade/{self.symbol}",
             ExchangeType.BINGX: f"https://www.bingx.com/en-us/futures/{self.symbol}",
+            ExchangeType.HTX: f"https://www.htx.com/futures/{self.symbol.lower()}",
         }
         return exchange_urls.get(self.futures_exchange, "")
     

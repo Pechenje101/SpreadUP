@@ -51,8 +51,8 @@ class Settings(BaseSettings):
         description="WebSocket reconnection delay in seconds"
     )
     NOTIFICATION_COOLDOWN_SEC: int = Field(
-        default=60,
-        description="Cooldown between alerts for same pair"
+        default=1800,  # 30 minutes
+        description="Cooldown between alerts for same pair (30 min)"
     )
     MAX_CONCURRENT_CONNECTIONS: int = Field(
         default=100,
@@ -100,5 +100,12 @@ EXCHANGE_CONFIG = {
         "spot_ws_base": "wss://open-api-ws.bingx.com/spot",
         "futures_rest_base": "https://open-api.bingx.com",
         "futures_ws_base": "wss://open-api-ws.bingx.com/swap",
+    },
+    "htx": {
+        "name": "HTX",
+        "spot_rest_base": "https://api.htx.com",
+        "spot_ws_base": "wss://api.htx.com/ws",
+        "futures_rest_base": "https://api.htx.com",
+        "futures_ws_base": "wss://api.htx.com/ws",
     }
 }

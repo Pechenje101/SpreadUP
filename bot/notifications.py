@@ -151,9 +151,19 @@ class NotificationService:
 💰 <b>Цены:</b>
    Спот ({opp.spot_exchange.value.upper()}): ${opp.spot_price:,.{self._get_decimals(opp.spot_price)}f}
    Фьючерс ({opp.futures_exchange.value.upper()}): ${opp.futures_price:,.{self._get_decimals(opp.futures_price)}f}
-
-⏱ <b>Время:</b> {opp.timestamp.strftime('%Y-%m-%d %H:%M:%S')} UTC
 """
+        
+        # Add volume info if available
+        if opp.volume_24h:
+            if opp.volume_24h >= 1_000_000:
+                vol_str = f"${opp.volume_24h/1_000_000:.2f}M"
+            elif opp.volume_24h >= 1_000:
+                vol_str = f"${opp.volume_24h/1_000:.2f}K"
+            else:
+                vol_str = f"${opp.volume_24h:.2f}"
+            message += f"\n📊 <b>Объем 24ч:</b> {vol_str}\n"
+        
+        message += f"\n⏱ <b>Время:</b> {opp.timestamp.strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
         
         # Add latency info if available
         if opp.detection_latency_ms:

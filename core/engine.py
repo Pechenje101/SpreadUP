@@ -15,6 +15,7 @@ from core.calculator import SpreadCalculator
 from exchanges.mexc.client import MEXCConnector
 from exchanges.gateio.client import GateIOConnector
 from exchanges.bingx.client import BingXConnector
+from exchanges.htx.client import HTXConnector
 
 logger = structlog.get_logger()
 
@@ -76,6 +77,10 @@ class MonitoringEngine:
             ExchangeType.BINGX: BingXConnector(
                 api_key=self.settings.BINGX_API_KEY,
                 api_secret=self.settings.BINGX_API_SECRET
+            ),
+            ExchangeType.HTX: HTXConnector(
+                api_key=getattr(self.settings, 'HTX_API_KEY', None),
+                api_secret=getattr(self.settings, 'HTX_API_SECRET', None)
             )
         }
         

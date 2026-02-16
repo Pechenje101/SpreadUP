@@ -12,6 +12,7 @@ class ExchangeType(str, Enum):
     MEXC = "mexc"
     GATEIO = "gateio"
     BINGX = "bingx"
+    HTX = "htx"
 
 
 class MarketType(str, Enum):

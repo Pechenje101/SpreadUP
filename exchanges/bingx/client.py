@@ -93,36 +93,46 @@ class BingXConnector(BaseExchangeConnector):
     
     async def get_all_spot_prices(self) -> Dict[str, float]:
         """Get all spot prices via REST API."""
-        url = f"{self.spot_rest_base}/openApi/spot/v1/ticker/prices"
+        url = f"{self.spot_rest_base}/openApi/spot/v1/ticker/price"
         headers = {"Content-Type": "application/json"}
         data = await self._rest_request(url, headers=headers)
         
         prices = {}
-        if data and "data" in data:
-            for item in data["data"]:
+        if data and "code" == 0 or "data" in data:
+            items = data.get("data", [])
+            for item in items:
+                # BingX returns trades array, get latest price
                 symbol = item.get("symbol", "")
-                price = item.get("price", "0")
-                if symbol and price:
+                trades = item.get("trades", [])
+                if symbol and trades:
+                    # Replace _ with empty for normalization
+                    normalized = symbol.replace("_", "")
                     try:
-                        prices[symbol] = float(price)
-                    except (ValueError, TypeError):
+                        price = float(trades[0].get("price", 0))
+                        if price > 0:
+                            prices[normalized] = price
+                    except (ValueError, TypeError, IndexError):
                         pass
         
         return prices
     
     async def get_all_futures_prices(self) -> Dict[str, float]:
         """Get all futures prices via REST API."""
-        url = f"{self.futures_rest_base}/openApi/swap/v2/quote/prices"
+        url = f"{self.futures_rest_base}/openApi/swap/v2/quote/price"
         data = await self._rest_request(url)
         
         prices = {}
-        if data and "data" in data:
-            for item in data["data"]:
+        if data and (data.get("code") == 0 or "data" in data):
+            items = data.get("data", [])
+            for item in items:
                 symbol = item.get("symbol", "")
                 normalized = symbol.replace("-", "")
                 price = item.get("price", 0)
                 if normalized and price:
-                    prices[normalized] = float(price)
+                    try:
+                        prices[normalized] = float(price)
+                    except (ValueError, TypeError):
+                        pass
         
         return prices
     
