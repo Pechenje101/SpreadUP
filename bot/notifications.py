@@ -2,7 +2,7 @@
 Notification service for sending alerts to Telegram.
 """
 import asyncio
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, TYPE_CHECKING
 from datetime import datetime
 import structlog
 
@@ -13,6 +13,9 @@ from aiogram.exceptions import TelegramAPIError
 from models.spread import SpreadAlert, SpreadOpportunity
 from bot.keyboards import get_opportunity_keyboard
 
+if TYPE_CHECKING:
+    from bot.filters_service import FilterService
+
 logger = structlog.get_logger()
 
 
@@ -22,28 +25,35 @@ class NotificationService:
     Implements rate limiting and subscription management.
     """
     
-    def __init__(self, bot: Bot):
+    def __init__(self, bot: Bot, filter_service: Optional['FilterService'] = None):
         """
         Initialize notification service.
         
         Args:
             bot: Aiogram Bot instance
+            filter_service: Optional filter service for user-specific filters
         """
         self.bot = bot
+        self.filter_service = filter_service
         
         # User subscriptions
         self._subscribers: Set[int] = set()
         
-        # Rate limiting
+        # Rate limiting (per token, 30 minutes)
         self._last_notification_time: Dict[str, datetime] = {}
-        self._notification_cooldown = 60  # seconds
+        self._notification_cooldown = 1800  # 30 minutes
         
         # Statistics
         self._stats = {
             "notifications_sent": 0,
             "notifications_failed": 0,
-            "users_notified": 0
+            "users_notified": 0,
+            "filtered_out": 0
         }
+    
+    def set_filter_service(self, filter_service: 'FilterService'):
+        """Set filter service after initialization."""
+        self.filter_service = filter_service
     
     def subscribe(self, user_id: int):
         """Subscribe user to notifications."""
@@ -65,7 +75,7 @@ class NotificationService:
     
     async def send_alert(self, alert: SpreadAlert):
         """
-        Send alert to all subscribers.
+        Send alert to all subscribers (with filters).
         
         Args:
             alert: SpreadAlert to send
@@ -73,8 +83,10 @@ class NotificationService:
         if not self._subscribers:
             return
         
-        # Check rate limit
-        key = f"{alert.opportunity.symbol}:{alert.opportunity.spot_exchange.value}"
+        opp = alert.opportunity
+        
+        # Check rate limit per base asset (token)
+        key = opp.base_asset
         if key in self._last_notification_time:
             elapsed = (datetime.utcnow() - self._last_notification_time[key]).total_seconds()
             if elapsed < self._notification_cooldown:
@@ -95,9 +107,28 @@ class NotificationService:
             alert.opportunity.futures_exchange.value
         )
         
-        # Send to all subscribers
+        # Send to all subscribers (with filters)
         tasks = []
         for user_id in list(self._subscribers):
+            # Check user filters if filter_service is available
+            if self.filter_service:
+                should_send = self.filter_service.should_send_alert(
+                    user_id,
+                    opp.spread_percent,
+                    opp.volume_24h or 0,
+                    opp.spot_exchange.value,
+                    opp.futures_exchange.value
+                )
+                if not should_send:
+                    self._stats["filtered_out"] += 1
+                    logger.debug(
+                        "Alert filtered out for user",
+                        user_id=user_id,
+                        symbol=opp.symbol,
+                        spread=opp.spread_percent
+                    )
+                    continue
+            
             tasks.append(self._send_to_user(user_id, message, keyboard))
         
         if tasks:

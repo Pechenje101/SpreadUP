@@ -23,6 +23,7 @@ from config.settings import get_settings
 from core.engine import MonitoringEngine
 from bot.handlers import register_handlers
 from bot.notifications import NotificationService
+from bot.filters_service import FilterService
 from utils.logger import configure_logging, get_logger
 
 # Initialize logger
@@ -49,17 +50,20 @@ async def main():
     # Initialize dispatcher
     dp = Dispatcher()
     
+    # Initialize filter service (for user-specific filters)
+    filter_service = FilterService()
+    
     # Initialize monitoring engine
     engine = MonitoringEngine()
     
-    # Initialize notification service
-    notification_service = NotificationService(bot)
+    # Initialize notification service with filter service
+    notification_service = NotificationService(bot, filter_service)
     
     # Register alert callback
     engine.add_alert_callback(notification_service.send_alert)
     
     # Register handlers
-    handler_router = register_handlers(engine, notification_service)
+    handler_router = register_handlers(engine, notification_service, filter_service)
     dp.include_router(handler_router)
     
     # Initialize engine
@@ -78,8 +82,9 @@ async def main():
                     admin_id,
                     f"🚀 <b>SpreadUP Bot запущен!</b>\n\n"
                     f"⏰ Время: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-                    f"📊 Порог спреда: {settings.SPREAD_THRESHOLD}%\n"
-                    f"💱 Биржи: MEXC, Gate.io, BingX"
+                    f"📊 Мин. спред: {settings.SPREAD_THRESHOLD}%\n"
+                    f"💱 Биржи: MEXC, Gate.io, BingX, HTX\n\n"
+                    f"⚙️ Настройте фильтры через /filters"
                 )
             except Exception as e:
                 logger.error("Failed to send startup notification", error=str(e))

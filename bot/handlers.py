@@ -18,9 +18,14 @@ from bot.keyboards import (
     get_main_keyboard,
     get_settings_keyboard,
     get_exchange_keyboard,
-    get_back_keyboard
+    get_back_keyboard,
+    get_filters_keyboard,
+    get_exchanges_filter_keyboard,
+    get_volume_presets_keyboard,
+    get_spread_presets_keyboard
 )
 from bot.notifications import NotificationService
+from bot.filters_service import FilterService
 
 logger = structlog.get_logger()
 
@@ -36,7 +41,8 @@ class SettingsStates(StatesGroup):
 
 def register_handlers(
     engine: MonitoringEngine,
-    notification_service: NotificationService
+    notification_service: NotificationService,
+    filter_service: FilterService
 ):
     """
     Register all bot handlers.
@@ -44,8 +50,9 @@ def register_handlers(
     Args:
         engine: Monitoring engine instance
         notification_service: Notification service instance
+        filter_service: Filter service instance
     """
-    
+
     # ==================== Command Handlers ====================
     
     @router.message(Command("start"))
@@ -68,15 +75,17 @@ def register_handlers(
 • MEXC
 • Gate.io  
 • BingX
+• HTX
 
 📊 <b>Мои возможности:</b>
 • Мониторинг спредов в реальном времени
-• Уведомления о значительных ценовых разницах (≥3%)
+• Уведомления о значительных ценовых разницах
 • Анализ сотен торговых пар
+• Настраиваемые фильтры по спреду, объёму и биржам
 
 ✅ Вы автоматически подписаны на уведомления!
 
-Используйте кнопки ниже или команды для управления.
+⚙️ Настройте фильтры через кнопку "Фильтры"
 """
         await message.answer(
             welcome_text,
@@ -102,6 +111,7 @@ def register_handlers(
         """Handle /status command."""
         user_id = message.from_user.id
         status = await engine.get_status()
+        filters = filter_service.get_filters(user_id)
         
         status_text = f"""
 📊 <b>Статус мониторинга</b>
@@ -111,6 +121,11 @@ def register_handlers(
 💰 <b>Цен в кэше:</b> {status["prices_cached"]}
 📊 <b>Возможностей:</b> {status["opportunities_count"]}
 👥 <b>Подписчиков:</b> {notification_service.get_subscribers_count()}
+
+⚙️ <b>Ваши фильтры:</b>
+📉 Спред: {filters.min_spread}% - {filters.max_spread}%
+📊 Мин. объём: ${filters.min_volume:,.0f}
+💱 Биржи: {', '.join(sorted(filters.enabled_exchanges)) or 'Нет'}
 
 <b>Топ возможности:</b>
 """
@@ -126,28 +141,49 @@ def register_handlers(
     @router.message(Command("scan"))
     async def cmd_scan(message: Message):
         """Handle /scan command."""
+        user_id = message.from_user.id
+        filters = filter_service.get_filters(user_id)
+        
         status_msg = await message.answer("🔄 <b>Сканирование рынка...</b>", parse_mode="HTML")
         
         try:
             opportunities = await engine.force_scan()
             
-            if not opportunities:
+            # Apply user filters
+            filtered_opps = [
+                opp for opp in opportunities
+                if filters.should_alert(
+                    opp.spread_percent,
+                    opp.volume_24h,
+                    opp.spot_exchange.value,
+                    opp.futures_exchange.value
+                )
+            ]
+            
+            if not filtered_opps:
                 await status_msg.edit_text(
-                    "📊 <b>Результаты сканирования</b>\n\n"
-                    "В данный момент нет значительных спредов (≥3%).\n"
-                    "Попробуйте позже.",
+                    f"📊 <b>Результаты сканирования</b>\n\n"
+                    f"Найдено: {len(opportunities)} возможностей\n"
+                    f"После фильтрации: 0\n\n"
+                    f"Попробуйте изменить фильтры.",
                     parse_mode="HTML"
                 )
                 return
             
             # Show top 10
-            text = f"📊 <b>Результаты сканирования</b>\n\nНайдено: {len(opportunities)} возможностей\n\n"
+            text = f"📊 <b>Результаты сканирования</b>\n\nНайдено: {len(opportunities)} | После фильтрации: {len(filtered_opps)}\n\n"
             
-            for i, opp in enumerate(opportunities[:10], 1):
+            for i, opp in enumerate(filtered_opps[:10], 1):
                 emoji = "🔥" if opp.spread_percent >= 5 else "⚡"
-                text += f"{i}. {emoji} <b>{opp.base_asset}</b>: {opp.spread_percent:.2f}%\n"
-                text += f"   Спот: ${opp.spot_price:.4f} ({opp.spot_exchange.value})\n"
-                text += f"   Фьючерс: ${opp.futures_price:.4f} ({opp.futures_exchange.value})\n\n"
+                vol_str = ""
+                if opp.volume_24h:
+                    if opp.volume_24h >= 1_000_000:
+                        vol_str = f" (${opp.volume_24h/1_000_000:.1f}M)"
+                    elif opp.volume_24h >= 1_000:
+                        vol_str = f" (${opp.volume_24h/1_000:.0f}K)"
+                
+                text += f"{i}. {emoji} <b>{opp.base_asset}</b>: {opp.spread_percent:.2f}%{vol_str}\n"
+                text += f"   {opp.spot_exchange.value} → {opp.futures_exchange.value}\n\n"
             
             await status_msg.edit_text(text, parse_mode="HTML")
             
@@ -161,12 +197,25 @@ def register_handlers(
     @router.message(Command("top"))
     async def cmd_top(message: Message):
         """Handle /top command."""
+        user_id = message.from_user.id
+        filters = filter_service.get_filters(user_id)
         opportunities = engine._last_opportunities
         
-        if not opportunities:
+        # Apply filters
+        filtered_opps = [
+            opp for opp in opportunities
+            if filters.should_alert(
+                opp.spread_percent,
+                opp.volume_24h,
+                opp.spot_exchange.value,
+                opp.futures_exchange.value
+            )
+        ]
+        
+        if not filtered_opps:
             await message.answer(
                 "📊 <b>Топ спредов</b>\n\n"
-                "Нет данных. Используйте /scan для сканирования.",
+                "Нет данных после фильтрации. Измените фильтры или используйте /scan.",
                 parse_mode="HTML"
             )
             return
@@ -174,12 +223,37 @@ def register_handlers(
         text = "📊 <b>Топ-10 текущих спредов</b>\n\n"
         
         medals = ["🥇", "🥈", "🥉"]
-        for i, opp in enumerate(opportunities[:10], 1):
+        for i, opp in enumerate(filtered_opps[:10], 1):
             medal = medals[i-1] if i <= 3 else f"{i}."
             emoji = "🔥" if opp.spread_percent >= 5 else "⚡"
             text += f"{medal} {emoji} <b>{opp.base_asset}</b>: {opp.spread_percent:.2f}%\n"
         
         await message.answer(text, parse_mode="HTML")
+    
+    @router.message(Command("filters"))
+    async def cmd_filters(message: Message):
+        """Handle /filters command."""
+        user_id = message.from_user.id
+        filters = filter_service.get_filters(user_id)
+        
+        text = f"""
+⚙️ <b>Фильтры уведомлений</b>
+
+Настройте параметры для фильтрации арбитражных возможностей:
+
+📉 <b>Спред:</b> {filters.min_spread}% - {filters.max_spread}%
+📊 <b>Мин. объём:</b> ${filters.min_volume:,.0f}
+💱 <b>Биржи:</b> {', '.join(sorted(filters.enabled_exchanges)) or 'Нет активных'}
+"""
+        await message.answer(
+            text, 
+            parse_mode="HTML",
+            reply_markup=get_filters_keyboard(
+                filters.min_spread,
+                filters.max_spread,
+                filters.min_volume
+            )
+        )
     
     @router.message(Command("subscribe"))
     async def cmd_subscribe(message: Message):
@@ -189,7 +263,7 @@ def register_handlers(
         
         await message.answer(
             "✅ <b>Вы подписаны на уведомления!</b>\n\n"
-            "Я буду отправлять вам уведомления о значительных спредах (≥3%).",
+            "Я буду отправлять вам уведомления о спредах согласно вашим фильтрам.",
             parse_mode="HTML"
         )
     
@@ -206,22 +280,6 @@ def register_handlers(
             parse_mode="HTML"
         )
     
-    @router.message(Command("settings"))
-    async def cmd_settings(message: Message):
-        """Handle /settings command."""
-        settings = engine.settings
-        
-        text = f"""
-⚙️ <b>Настройки</b>
-
-📉 <b>Порог спреда:</b> {settings.SPREAD_THRESHOLD}%
-⏱ <b>Интервал проверки:</b> {settings.CHECK_INTERVAL_MS}ms
-🔔 <b>Кулдаун уведомлений:</b> {settings.NOTIFICATION_COOLDOWN_SEC}сек
-
-Выберите параметр для изменения:
-"""
-        await message.answer(text, parse_mode="HTML", reply_markup=get_settings_keyboard())
-    
     @router.message(Command("help"))
     async def cmd_help(message: Message):
         """Handle /help command."""
@@ -230,27 +288,28 @@ def register_handlers(
 
 <b>Что такое спред?</b>
 Спред - это разница между ценой фьючерса и спотовой ценой криптовалюты. 
-Когда фьючерс дороже спота на ≥3%, это может быть арбитражной возможностью.
+Когда фьючерс дороже спота, это может быть арбитражной возможностью.
 
 <b>Команды:</b>
 /start - Начать работу с ботом
 /scan - Сканировать рынок сейчас
 /top - Показать топ-10 спредов
+/filters - Настроить фильтры
 /subscribe - Подписаться на уведомления
 /unsubscribe - Отписаться от уведомлений
 /status - Статус мониторинга
-/settings - Настройки
 /help - Эта справка
 
-<b>Как использовать:</b>
-1. Подпишитесь на уведомления (/subscribe)
-2. Бот будет автоматически присылать уведомления о спредах ≥3%
-3. Используйте /scan для ручного поиска возможностей
+<b>Фильтры:</b>
+• Мин/макс спред - диапазон интересующих спредов
+• Мин. объём - минимальный объём торгов за 24ч
+• Биржи - выбор активных бирж
 
 <b>Биржи:</b>
 • MEXC
 • Gate.io
 • BingX
+• HTX
 
 ⚠️ <b>Дисклеймер:</b>
 Этот бот предоставляет только информацию для анализа. 
@@ -303,10 +362,30 @@ def register_handlers(
         await cmd_status(callback.message)
         await callback.answer()
     
-    @router.callback_query(F.data == "settings")
-    async def callback_settings(callback: CallbackQuery):
-        """Handle settings button."""
-        await cmd_settings(callback.message)
+    @router.callback_query(F.data == "filters")
+    async def callback_filters(callback: CallbackQuery):
+        """Handle filters button."""
+        user_id = callback.from_user.id
+        filters = filter_service.get_filters(user_id)
+        
+        text = f"""
+⚙️ <b>Фильтры уведомлений</b>
+
+Настройте параметры для фильтрации арбитражных возможностей:
+
+📉 <b>Спред:</b> {filters.min_spread}% - {filters.max_spread}%
+📊 <b>Мин. объём:</b> ${filters.min_volume:,.0f}
+💱 <b>Биржи:</b> {', '.join(sorted(filters.enabled_exchanges)) or 'Нет активных'}
+"""
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=get_filters_keyboard(
+                filters.min_spread,
+                filters.max_spread,
+                filters.min_volume
+            )
+        )
         await callback.answer()
     
     @router.callback_query(F.data == "back_main")
@@ -318,6 +397,128 @@ def register_handlers(
             reply_markup=get_main_keyboard()
         )
         await callback.answer()
+    
+    # ==================== Filter Settings Callbacks ====================
+    
+    @router.callback_query(F.data == "filter_min_spread")
+    async def callback_filter_min_spread(callback: CallbackQuery):
+        """Handle min spread filter."""
+        await callback.message.edit_text(
+            "📉 <b>Выберите минимальный спред</b>\n\n"
+            "Показывать только возможности со спредом не менее выбранного значения.",
+            parse_mode="HTML",
+            reply_markup=get_spread_presets_keyboard("min")
+        )
+        await callback.answer()
+    
+    @router.callback_query(F.data == "filter_max_spread")
+    async def callback_filter_max_spread(callback: CallbackQuery):
+        """Handle max spread filter."""
+        await callback.message.edit_text(
+            "📈 <b>Выберите максимальный спред</b>\n\n"
+            "Фильтровать слишком большие спреды (часто ошибки данных).",
+            parse_mode="HTML",
+            reply_markup=get_spread_presets_keyboard("max")
+        )
+        await callback.answer()
+    
+    @router.callback_query(F.data == "filter_min_volume")
+    async def callback_filter_min_volume(callback: CallbackQuery):
+        """Handle min volume filter."""
+        await callback.message.edit_text(
+            "📊 <b>Выберите минимальный объём торгов за 24ч</b>\n\n"
+            "Показывать только пары с достаточной ликвидностью.",
+            parse_mode="HTML",
+            reply_markup=get_volume_presets_keyboard()
+        )
+        await callback.answer()
+    
+    @router.callback_query(F.data == "filter_exchanges")
+    async def callback_filter_exchanges(callback: CallbackQuery):
+        """Handle exchanges filter."""
+        user_id = callback.from_user.id
+        filters = filter_service.get_filters(user_id)
+        
+        await callback.message.edit_text(
+            "💱 <b>Выберите биржи для мониторинга</b>\n\n"
+            "Нажмите на биржу чтобы включить/отключить её.",
+            parse_mode="HTML",
+            reply_markup=get_exchanges_filter_keyboard(filters.enabled_exchanges)
+        )
+        await callback.answer()
+    
+    @router.callback_query(F.data.startswith("set_min_spread_"))
+    async def callback_set_min_spread(callback: CallbackQuery):
+        """Set minimum spread."""
+        user_id = callback.from_user.id
+        value = float(callback.data.replace("set_min_spread_", ""))
+        filter_service.set_min_spread(user_id, value)
+        
+        await callback.answer(f"Мин. спред установлен: {value}%")
+        await callback_filters.callback_filters(callback)
+    
+    @router.callback_query(F.data.startswith("set_max_spread_"))
+    async def callback_set_max_spread(callback: CallbackQuery):
+        """Set maximum spread."""
+        user_id = callback.from_user.id
+        value = float(callback.data.replace("set_max_spread_", ""))
+        filter_service.set_max_spread(user_id, value)
+        
+        await callback.answer(f"Макс. спред установлен: {value}%")
+        await callback_filters.callback_filters(callback)
+    
+    @router.callback_query(F.data.startswith("set_volume_"))
+    async def callback_set_volume(callback: CallbackQuery):
+        """Set minimum volume."""
+        user_id = callback.from_user.id
+        value = float(callback.data.replace("set_volume_", ""))
+        filter_service.set_min_volume(user_id, value)
+        
+        vol_str = f"${value:,.0f}" if value >= 1000 else f"${value}"
+        await callback.answer(f"Мин. объём установлен: {vol_str}")
+        await callback_filters.callback_filters(callback)
+    
+    @router.callback_query(F.data.startswith("toggle_exchange_"))
+    async def callback_toggle_exchange(callback: CallbackQuery):
+        """Toggle exchange enabled status."""
+        user_id = callback.from_user.id
+        exchange = callback.data.replace("toggle_exchange_", "")
+        filter_service.toggle_exchange(user_id, exchange)
+        
+        filters = filter_service.get_filters(user_id)
+        status = "включена" if exchange in filters.enabled_exchanges else "отключена"
+        await callback.answer(f"Биржа {exchange} {status}")
+        
+        # Refresh keyboard
+        await callback.message.edit_reply_markup(
+            reply_markup=get_exchanges_filter_keyboard(filters.enabled_exchanges)
+        )
+    
+    @router.callback_query(F.data == "enable_all_exchanges")
+    async def callback_enable_all_exchanges(callback: CallbackQuery):
+        """Enable all exchanges."""
+        user_id = callback.from_user.id
+        filter_service.enable_all_exchanges(user_id)
+        
+        await callback.answer("Все биржи включены")
+        filters = filter_service.get_filters(user_id)
+        await callback.message.edit_reply_markup(
+            reply_markup=get_exchanges_filter_keyboard(filters.enabled_exchanges)
+        )
+    
+    @router.callback_query(F.data == "disable_all_exchanges")
+    async def callback_disable_all_exchanges(callback: CallbackQuery):
+        """Disable all exchanges."""
+        user_id = callback.from_user.id
+        filter_service.disable_all_exchanges(user_id)
+        
+        await callback.answer("Все биржи отключены")
+        filters = filter_service.get_filters(user_id)
+        await callback.message.edit_reply_markup(
+            reply_markup=get_exchanges_filter_keyboard(filters.enabled_exchanges)
+        )
+    
+    # ==================== Detail Callbacks ====================
     
     @router.callback_query(F.data.startswith("detail_"))
     async def callback_detail(callback: CallbackQuery):
@@ -334,10 +535,17 @@ def register_handlers(
             await callback.answer("Данные устарели. Выполните сканирование.")
             return
         
+        vol_str = ""
+        if opp.volume_24h:
+            if opp.volume_24h >= 1_000_000:
+                vol_str = f"\n📊 <b>Объём 24ч:</b> ${opp.volume_24h/1_000_000:.2f}M"
+            elif opp.volume_24h >= 1_000:
+                vol_str = f"\n📊 <b>Объём 24ч:</b> ${opp.volume_24h/1_000:.0f}K"
+        
         text = f"""
 📊 <b>Детали: {opp.base_asset}/USDT</b>
 
-📈 <b>Спред:</b> {opp.spread_percent:.2f}%
+📈 <b>Спред:</b> {opp.spread_percent:.2f}%{vol_str}
 
 💰 <b>Цены:</b>
 • Спот ({opp.spot_exchange.value}): ${opp.spot_price:.{6 if opp.spot_price < 1 else 2}f}
