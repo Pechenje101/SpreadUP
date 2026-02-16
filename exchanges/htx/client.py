@@ -110,6 +110,7 @@ class HTXConnector(BaseExchangeConnector):
                     except (ValueError, TypeError):
                         pass
         
+        logger.info(f"HTX spot prices fetched: {len(prices)} pairs")
         return prices
     
     async def get_all_futures_prices(self) -> Dict[str, float]:
