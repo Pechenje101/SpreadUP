@@ -98,7 +98,7 @@ class BingXConnector(BaseExchangeConnector):
         data = await self._rest_request(url, headers=headers)
         
         prices = {}
-        if data and "code" == 0 or "data" in data:
+        if data and (data.get("code") == 0 or "data" in data):
             items = data.get("data", [])
             for item in items:
                 # BingX returns trades array, get latest price

@@ -110,34 +110,32 @@ class HTXConnector(BaseExchangeConnector):
     
     async def get_all_futures_prices(self) -> Dict[str, float]:
         """Get all futures prices via REST API."""
-        # HTX futures need individual requests, so we'll use the contract info
         prices = {}
         
         try:
-            # Get contract info first
-            url = f"{self.futures_rest_base}/api/v1/contract_contract_info"
-            data = await self._rest_request(url)
+            # HTX uses _CQ suffix for current quarter perpetual-like contracts
+            # Get popular symbols from spot and check futures
+            popular_bases = ["BTC", "ETH", "BNB", "SOL", "XRP", "DOGE", "ADA", "AVAX", 
+                           "MATIC", "DOT", "LINK", "UNI", "ATOM", "LTC", "BCH", "TRX",
+                           "ARB", "OP", "APT", "NEAR", "FTM", "INJ", "SUI", "SEI"]
             
-            if data and "data" in data:
-                # Get prices for perpetual-like contracts
-                for contract in data["data"]:
-                    if contract.get("contract_status") == 1:
-                        symbol = contract.get("symbol", "")
-                        contract_code = contract.get("contract_code", "")
-                        if symbol and contract_code:
-                            normalized = f"{symbol}USDT"
-                            # Use the contract price from market data
-                            try:
-                                price_url = f"{self.futures_rest_base}/market/history/kline"
-                                params = {"symbol": contract_code, "period": "1min", "size": 1}
-                                price_data = await self._rest_request(price_url, params=params)
-                                if price_data and "data" in price_data and len(price_data["data"]) > 0:
-                                    prices[normalized] = float(price_data["data"][0].get("close", 0))
-                            except:
-                                pass
+            for base in popular_bases:
+                try:
+                    # Try CQ (current quarter) contract
+                    url = f"{self.futures_rest_base}/market/history/kline"
+                    params = {"symbol": f"{base}_CQ", "period": "1min", "size": 1}
+                    data = await self._rest_request(url, params=params)
+                    
+                    if data and "data" in data and len(data["data"]) > 0:
+                        normalized = f"{base}USDT"
+                        prices[normalized] = float(data["data"][0].get("close", 0))
+                except:
+                    pass
+                    
         except Exception as e:
             logger.error("HTX futures prices error", error=str(e))
         
+        logger.info(f"HTX futures prices fetched: {len(prices)} pairs")
         return prices
     
     async def _connect_spot_ws(self):
